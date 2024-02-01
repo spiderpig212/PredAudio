@@ -1,21 +1,28 @@
-import torch
-import torchvision
-import torch.nn as nn
-import torch.nn.functional as F
-from torch.autograd import Variable
-from torch.utils.data import Dataset, DataLoader, TensorDataset
-from torch.optim import lr_scheduler
-from torch.utils.tensorboard import SummaryWriter
-import torch.autograd.profiler as profiler
-# from apex import amp
+import argparse
+import glob
+import json
+import multiprocessing
+import os
+import random
+import time
 
 import matplotlib.pyplot as plt
-import argparse, random, multiprocessing
 import numpy as np
-import glob, os, time, json
-import numpy as np
+import torch
+import torch.autograd.profiler as profiler
+import torch.nn as nn
+import torch.nn.functional as F
+import torchvision
 from numba import njit
+from torch.autograd import Variable
+from torch.optim import lr_scheduler
+from torch.utils.data import Dataset, DataLoader, TensorDataset
+from torch.utils.tensorboard import SummaryWriter
+
 from datasets import AudioDataset
+
+
+# from apex import amp
 
 
 def arg_parser(): 
@@ -23,7 +30,7 @@ def arg_parser():
     parser.add_argument('--BatchSize', type=int, default=32)
     parser.add_argument('--Comp', type=int, default=0)
     parser.add_argument('--source_path', type=str,
-                        default='~/Research/PredAudio/',
+                        default='~/Desktop/Research/Murray/git/PredAudio/',
                         help='Path to load files from')
     parser.add_argument('--outputmode', type=str, default='prediction',
                         help='Chose a loss function: error, prediction')
@@ -62,10 +69,10 @@ def hard_sigmoid(x):
     return x
 
 def batch_flatten(x):
-    '''
+    """
     equal to the `batch_flatten` in keras.
     x is a Variable in pytorch
-    '''
+    """
     shape = [*x.size()]
     dim = np.prod(shape[1:])
     dim = int(dim)     
@@ -77,14 +84,14 @@ def check_path(basepath, path):
         return basepath
     elif not os.path.exists(os.path.join(basepath, path)):
         os.makedirs(os.path.join(basepath, path))
-        print('Added Directory:'+ os.path.join(basepath, path))
+        print('Added Directory:' + os.path.join(basepath, path))
         return os.path.join(basepath, path)
     else:
         return os.path.join(basepath, path)
 
 ########## Define Logging class to create csv document with errors ##########
 class log:
-    def __init__(self,f,name = "", PRINT = True, retrain=False):
+    def __init__(self, f, name="", PRINT=True, retrain=False):
         text = ""
         if type(name) == list:
             text = "{}".format(name[0])
@@ -95,16 +102,16 @@ class log:
 
         self.FNAME = f
         if retrain:
-            F = open(self.FNAME,"a")
+            F = open(self.FNAME, "a")
         else: 
-            F = open(self.FNAME,"w+")
+            F = open(self.FNAME, "w+")
         if len(text) != 0:
             F.write(text + "\n")
         F.close()
         if PRINT:
             print(text)
 
-    def log(self,data,PRINT = True):
+    def log(self, data, PRINT=True):
         text = ""
         if type(data) == list:
             text = "{}".format(data[0])
@@ -114,36 +121,36 @@ class log:
             text = data
         if PRINT:
             print(text)
-        F = open(self.FNAME,"a")
+        F = open(self.FNAME, "a")
         F.write(str(text) + "\n")
         F.close()
 
 ########## Create Figure for Tensorboard ##########
 def plot_imshow(batch, frame_pred, netparams):
     ##### GT Vs Pred frames #####
-    frame_pred = np.stack(frame_pred).transpose(1,0,2).reshape(netparams['BatchSize'], netparams['TimeSize'], netparams['height'], netparams['width'])
+    frame_pred = np.stack(frame_pred).transpose(1, 0, 2).reshape(netparams['BatchSize'], netparams['TimeSize'], netparams['height'], netparams['width'])
     GT = np.squeeze(batch.detach().numpy())
     fmGT = torch.FloatTensor(GT[0]).unsqueeze(1)
     fmP = torch.FloatTensor(frame_pred[0]).unsqueeze(1)
-    GT_Grid = torchvision.utils.make_grid(fmGT,nrow=netparams['TimeSize'])
-    P_Grid = torchvision.utils.make_grid(fmP,nrow=netparams['TimeSize'])
+    GT_Grid = torchvision.utils.make_grid(fmGT, nrow=netparams['TimeSize'])
+    P_Grid = torchvision.utils.make_grid(fmP, nrow=netparams['TimeSize'])
 
-    fig1, axs = plt.subplots(2, 1, figsize = (20,10))
-    axs[0].imshow(GT_Grid[0], aspect='auto',  origin='lower') #cmap='gray'
-    axs[1].imshow(P_Grid[0],  aspect='auto',  origin='lower') #cmap='gray'
+    fig1, axs = plt.subplots(2, 1, figsize=(20, 10))
+    axs[0].imshow(GT_Grid[0], aspect='auto',  origin='lower')  # cmap='gray'
+    axs[1].imshow(P_Grid[0],  aspect='auto',  origin='lower')  # cmap='gray'
     axs[0].axis('off')
     axs[1].axis('off')
     plt.tight_layout()
 
     ##### Delta t Plot #####
     diffrange = 3
-    diffloss = parallel_diff(frame_pred.astype(float),GT.astype(float),diffrange=diffrange)
-    STD= np.nanstd(diffloss,axis=0)
-    DiffAvg= np.nanmean(diffloss,axis=0)
-    fig2, ax2 = plt.subplots(1,figsize=(5,5))
-    x=np.arange(-diffrange,diffrange+1)+1
-    ax2.plot(x,DiffAvg, 'k', linewidth=3 )
-    ax2.fill_between(x,DiffAvg-STD,DiffAvg+STD,alpha=.5,color='k') 
+    diffloss = parallel_diff(frame_pred.astype(float), GT.astype(float), diffrange=diffrange)
+    STD = np.nanstd(diffloss, axis=0)
+    DiffAvg = np.nanmean(diffloss, axis=0)
+    fig2, ax2 = plt.subplots(1, figsize=(5, 5))
+    x = np.arange(-diffrange, diffrange+1)+1
+    ax2.plot(x, DiffAvg, 'k', linewidth=3)
+    ax2.fill_between(x, DiffAvg-STD, DiffAvg+STD, alpha=.5, color='k')
     plt.tight_layout()
 
     # torch.cat((GT_Grid,P_Grid),dim=1)
@@ -151,26 +158,26 @@ def plot_imshow(batch, frame_pred, netparams):
 
 # Calculate the error between the prediction and actual fram separated by delta t
 @njit(parallel=True)
-def parallel_diff(FM_Pred,FM_Actual,diffrange=10):
-    BatchSize,tlength,width,height = FM_Actual.shape
+def parallel_diff(FM_Pred, FM_Actual, diffrange=10):
+    BatchSize, tlength, width, height = FM_Actual.shape
     # Assumes FM_Pred and FM_Actual have same dimensions.
-    assert FM_Pred.shape == FM_Actual.shape,'Dimensions must be equal'
+    assert FM_Pred.shape == FM_Actual.shape, 'Dimensions must be equal'
     # Diff in frame loss
     diffloss = np.zeros((tlength, diffrange*2+1))
     diffloss[:] = np.nan
     
     for fm in range(tlength):# trange(0,tlength, desc='Frame Num',leave=False): #
         for ind, tau in enumerate(np.arange(-diffrange, diffrange+1)):
-            if ((fm+tau) <= (tlength-tau)) & ((fm+tau)>=0):
-                diffloss[fm,ind] = np.nanmean(np.abs(FM_Pred[:,fm,:,:] - FM_Actual[:,fm+tau,:,:]))
+            if ((fm+tau) <= (tlength-tau)) & ((fm+tau) >= 0):
+                diffloss[fm, ind] = np.nanmean(np.abs(FM_Pred[:, fm, :, :] - FM_Actual[:, fm+tau, :, :]))
     return diffloss
 
 class PreCNet(nn.Module):
     def __init__(self, stack_sizes, R_stack_sizes, Ahat_filt_sizes, R_filt_sizes,
-                 pixel_max=1., error_activation='relu', stateful = True,
+                 pixel_max=1., error_activation='relu', stateful=True,
                  GRU_activation='tanh', GRU_inner_activation='hard_sigmoid',
-                 output_mode='error', extrap_start_time=None, data_format = 'channels_first',
-                 device='cuda',
+                 output_mode='error', extrap_start_time=None, data_format='channels_first',
+                 device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
                  lr=.003, optimizer='Adam', **kwargs):
         super(PreCNet, self).__init__()
         self.stack_sizes            = stack_sizes
@@ -204,7 +211,7 @@ class PreCNet(nn.Module):
         self.channel_axis = -3 if data_format == 'channels_first' else -1
         self.row_axis = -2 if data_format == 'channels_first' else -3
         self.column_axis = -1 if data_format == 'channels_first' else -2
-        self.device=device
+        self.device = device
         self.build()
     
     def get_initial_states(self, input_shape):
@@ -218,8 +225,8 @@ class PreCNet(nn.Module):
         base_initial_state = np.zeros(input_shape)
         non_channel_axis = -1 if self.data_format == 'channels_first' else -2
         for _ in range(2):
-            base_initial_state = np.sum(base_initial_state, axis = non_channel_axis)
-        base_initial_state = np.sum(base_initial_state, axis = 1)   # (batch_size, 3)
+            base_initial_state = np.sum(base_initial_state, axis=non_channel_axis)
+        base_initial_state = np.sum(base_initial_state, axis=1)   # (batch_size, 3)
 
         initial_states = []
         states_to_pass = ['R', 'E']    # R is `representation`, c is Cell state in GRU, E is `error`.
@@ -265,10 +272,10 @@ class PreCNet(nn.Module):
                 if c == 'ahat':
                     nb_channels = self.R_stack_sizes[l]
                     self.conv_layers['ahat'].append(nn.Conv2d(in_channels  = nb_channels, 
-                                                            out_channels = self.stack_sizes[l],
-                                                            stride       = (1, 1),
-                                                            kernel_size  = self.Ahat_filt_sizes[l],
-                                                            padding      =(-1 + self.Ahat_filt_sizes[l]) // 2)
+                                                              out_channels = self.stack_sizes[l],
+                                                              stride       = (1, 1),
+                                                              kernel_size  = self.Ahat_filt_sizes[l],
+                                                              padding      =(-1 + self.Ahat_filt_sizes[l]) // 2)
                     )
                 elif c in ['hd', 'zd', 'od']:
                     if l == self.nb_layers-1:
@@ -286,18 +293,18 @@ class PreCNet(nn.Module):
                     nb_channels = 2 * self.stack_sizes[l] + self.R_stack_sizes[l]
                     if l < self.nb_layers - 1:
                         self.conv_layers[c].append(nn.Conv2d(in_channels  = nb_channels,
-                                                            out_channels = self.R_stack_sizes[l],
-                                                            kernel_size  = self.R_filt_sizes[l],
-                                                            stride       = (1, 1),
-                                                            padding      = (-1 + self.R_filt_sizes[l]) // 2)
-                                                            )
+                                                             out_channels = self.R_stack_sizes[l],
+                                                             kernel_size  = self.R_filt_sizes[l],
+                                                             stride       = (1, 1),
+                                                             padding      = (-1 + self.R_filt_sizes[l]) // 2)
+                                                             )
 
         for name, layerList in self.conv_layers.items():
             self.conv_layers[name] = nn.ModuleList(layerList)
             setattr(self, name, self.conv_layers[name])
 
         self.upsample = nn.Upsample(scale_factor=2, mode='nearest')
-        self.pool = nn.MaxPool2d(kernel_size = 2, stride = 2, padding = 0)
+        self.pool = nn.MaxPool2d(kernel_size=2, stride=2, padding=0)
 
         if self.extrap_start_time is not None:
             self.t_extrap = Variable(torch.IntTensor(1).zero_().to(self.device), requires_grad=False)
@@ -336,7 +343,7 @@ class PreCNet(nn.Module):
             if l == 0:
                 ahat[ahat > self.pixel_max] = self.pixel_max        # passed through a saturating non-linearity set at the maximum pixel value
                 frame_prediction = ahat
-            ahat_list.insert(0,ahat)
+            ahat_list.insert(0, ahat)
             
             if l > 0:
                 a = self.pool(h_tm1[l-1])
@@ -377,7 +384,7 @@ class PreCNet(nn.Module):
                 ahat = ahat_list[l]
                 e_up = F.relu(ahat - a)
                 e_down = F.relu(a - ahat)
-                e[l] = torch.cat((e_up, e_down), axis = self.channel_axis)
+                e[l] = torch.cat((e_up, e_down), axis=self.channel_axis)
 
             if l < self.nb_layers - 1:
                 inputs = [h[l], e[l]]
@@ -406,12 +413,12 @@ class PreCNet(nn.Module):
                 output = frame_prediction
             else:
                 for l in range(self.num_layers):
-                    layer_error = torch.mean(batch_flatten(e[l]), dim = -1, keepdim = True)  
-                    all_error = layer_error if l == 0 else torch.cat((all_error, layer_error), dim = -1)
+                    layer_error = torch.mean(batch_flatten(e[l]), dim=-1, keepdim=True)
+                    all_error = layer_error if l == 0 else torch.cat((all_error, layer_error), dim=-1)
                 if self.output_mode == 'error':
                     output = all_error
                 else:
-                    output = torch.cat((batch_flatten(frame_prediction), all_error), dim = -1)
+                    output = torch.cat((batch_flatten(frame_prediction), all_error), dim=-1)
 
         states = h + e
         return output, states, batch_flatten(frame_prediction)
@@ -424,7 +431,7 @@ class PreCNet(nn.Module):
         output_list = [] 
         frame_pred_list = [] 
         for t in range(num_timesteps):
-            A0 = A0_withTimeStep[:,t]
+            A0 = A0_withTimeStep[:, t]
             output, hidden_states, frame_pred = self.step(A0, hidden_states)
             output_list.append(output)
             if grab_frame:
@@ -443,11 +450,11 @@ class PreCNet(nn.Module):
         num_timesteps = A0_withTimeStep.size()[1]
         hidden_states = initial_states    
         
-        ht = {'h{:d}'.format(n):[] for n in range(len(self.R_stack_sizes))}
+        ht = {'h{:d}'.format(n): [] for n in range(len(self.R_stack_sizes))}
         frame_pred_list = [] 
         with torch.no_grad():
             for t in range(num_timesteps):
-                A0 = A0_withTimeStep[:,t]
+                A0 = A0_withTimeStep[:, t]
                 _, hidden_states, frame_pred = self.step(A0, hidden_states)
                 output = [hidden_state.detach().clone().cpu().numpy() for hidden_state in hidden_states]
                 for n in range(len(self.R_stack_sizes)):
@@ -467,29 +474,29 @@ def GenerateDatasetsContiuous(Frame_Train, Train_Names, Frame_Test, Test_Names, 
 
     BTime = np.round(netparams['VidLength']/netparams['TimeSize']).astype(int)
     # Create Dataset from Numpy Array, With Motor Commands
-    Frame_Train2 = Frame_Train.reshape(-1,BTime,netparams['TimeSize'],netparams['width'],netparams['height'],1)
+    Frame_Train2 = Frame_Train.reshape(-1, BTime, netparams['TimeSize'], netparams['width'], netparams['height'],1)
     
-    Vrange_Train = np.arange(0,len(netparams['Train_Names'])+netparams['BatchSize'],netparams['BatchSize'])
-    n=0
+    Vrange_Train = np.arange(0, len(netparams['Train_Names'])+netparams['BatchSize'], netparams['BatchSize'])
+    n = 0
     FM_Train, Ag_Train = [], []
     for num in range(len(Vrange_Train)-1):
         while n < BTime:
-            FM_Train.append(Frame_Train2[Vrange_Train[num]:Vrange_Train[num+1],n,:,:,:])
-            n+=1
-        n=0
-        num+=1
+            FM_Train.append(Frame_Train2[Vrange_Train[num]:Vrange_Train[num+1], n, :, :, :])
+            n += 1
+        n = 0
+        num += 1
     FM_Train = np.vstack(FM_Train)
     
-    Frame_Test2 = Frame_Test.reshape(-1,BTime,netparams['TimeSize'],netparams['width'],netparams['height'],1)
-    Vrange_Test = np.arange(0,len(netparams['Test_Names'])+netparams['BatchSize'],netparams['BatchSize'])
+    Frame_Test2 = Frame_Test.reshape(-1, BTime, netparams['TimeSize'], netparams['width'], netparams['height'], 1)
+    Vrange_Test = np.arange(0, len(netparams['Test_Names'])+netparams['BatchSize'],netparams['BatchSize'])
     n=0
-    FM_Test, Ag_Test = [],[]
+    FM_Test, Ag_Test = [], []
     for num in range(len(Vrange_Test)-1):
         while n < BTime:
-            FM_Test.append(Frame_Test2[Vrange_Test[num]:Vrange_Test[num+1],n,:,:,:])
-            n+=1
-        n=0
-        num+=1
+            FM_Test.append(Frame_Test2[Vrange_Test[num]:Vrange_Test[num+1], n, :, :, :])
+            n += 1
+        n = 0
+        num += 1
     FM_Test = np.vstack(FM_Test)
     print('Orig. Train Dataset Shape: ', Frame_Train.shape, 'Orig. Test Dataset Shape: ', Frame_Test.shape)
     print('Cont. Train Dataset Shape: ', FM_Train.shape,    'Cont. Test Dataset Shape: ', FM_Test.shape)
@@ -523,12 +530,12 @@ def main(args):
     n_channels = 1
     img_height = 128
     img_width  = 16
-    stack1,stack2,stack3,stack4 = (4,16,64,256) #(32, 64, 128, 256) # 
-    stack_sizes       = (n_channels, stack1, stack2,stack3)
-    R_stack_sizes     = (stack1, stack2, stack3,stack4)
+    stack1, stack2, stack3, stack4 = (4, 16, 64, 256)  # (32, 64, 128, 256) #
+    stack_sizes       = (n_channels, stack1, stack2, stack3)
+    R_stack_sizes     = (stack1, stack2, stack3, stack4)
     FiltSizes         = 3
-    Ahat_filt_sizes   = tuple([FiltSizes for _ in range(len(stack_sizes))]) # (FiltSizes, FiltSizes, FiltSizes, FiltSizes)
-    R_filt_sizes      = tuple([FiltSizes for _ in range(len(stack_sizes))]) # (FiltSizes, FiltSizes, FiltSizes, FiltSizes)
+    Ahat_filt_sizes   = tuple([FiltSizes for _ in range(len(stack_sizes))])  # (FiltSizes, FiltSizes, FiltSizes, FiltSizes)
+    R_filt_sizes      = tuple([FiltSizes for _ in range(len(stack_sizes))])  # (FiltSizes, FiltSizes, FiltSizes, FiltSizes)
 
     BatchSize   = 64    # Size of minibatches
     TestSize    = 37    # Size of the test dataset, # of videos
@@ -562,35 +569,35 @@ def main(args):
 
     ########## Define Network Parameters ##########
     netparams = {'width': img_width,
-                'height': img_height,
-                'BatchSize': int(BatchSize),
-                'TimeSize': int(TimeSize),
-                'WindSize': int(WindSize),
-                'Overlap': int(Overlap),
-                'Tau': int(Tau),
-                'FiltNum': stack_sizes[1],
-                'KSize': R_filt_sizes[0], # Filter size for Recurrent Layer
-                'stack_sizes': stack_sizes,
-                'R_stack_sizes': R_stack_sizes,
-                'Ahat_filt_sizes': Ahat_filt_sizes,
-                'R_filt_sizes': R_filt_sizes,
-                'layer_loss_weightsMode': 'L_0',
-                'lr': 0.005,
-                'Nepochs': int(Nepochs),
-                'output_mode': output_mode,
-                'data_format': 'channels_first',
-                'ImageSize': img_width*img_height,
-                'log_freq': 10,
-    #             'source_path': source_path,
-                'save_path': save_path,
-                'input_shape':(BatchSize,TimeSize,img_height,img_width,1),
-                'Train_paths': os.path.join(rootdir,'Specs_train.npy'),
-                'Test_paths' : os.path.join(rootdir,'Specs_test.npy'),
-                'Trial' : int(Trial),
-                'use_motor': 0,
-                'Stateful': int(Stateful),
-                'Save_Grad': Save_Grad,
-                }
+                 'height': img_height,
+                 'BatchSize': int(BatchSize),
+                 'TimeSize': int(TimeSize),
+                 'WindSize': int(WindSize),
+                 'Overlap': int(Overlap),
+                 'Tau': int(Tau),
+                 'FiltNum': stack_sizes[1],
+                 'KSize': R_filt_sizes[0],  # Filter size for Recurrent Layer
+                 'stack_sizes': stack_sizes,
+                 'R_stack_sizes': R_stack_sizes,
+                 'Ahat_filt_sizes': Ahat_filt_sizes,
+                 'R_filt_sizes': R_filt_sizes,
+                 'layer_loss_weightsMode': 'L_0',
+                 'lr': 0.005,
+                 'Nepochs': int(Nepochs),
+                 'output_mode': output_mode,
+                 'data_format': 'channels_first',
+                 'ImageSize': img_width*img_height,
+                 'log_freq': 10,
+                 # 'source_path': source_path,
+                 'save_path': save_path,
+                 'input_shape': (BatchSize, TimeSize, img_height, img_width, 1),
+                 'Train_paths': os.path.join(rootdir, 'Specs_train.npy'),
+                 'Test_paths': os.path.join(rootdir, 'Specs_test.npy'),
+                 'Trial': int(Trial),
+                 'use_motor': 0,
+                 'Stateful': int(Stateful),
+                 'Save_Grad': Save_Grad,
+                 }
 
     ########## Input Shape for building Network ##########
     if netparams['data_format'] == 'channels_first':
@@ -610,24 +617,24 @@ def main(args):
     # FM_Test  = np.clip(FM_Test.transpose(0,1,4,2,3) / 255, 2e-30, 1).astype(float32)
 
     ########## Create Datasets and DataLoaders ##########
-    Dataset_Train = AudioDataset(netparams['Train_paths'],netparams['WindSize'],netparams['Overlap'])
-    Dataset_Test = AudioDataset(netparams['Test_paths'],netparams['WindSize'],netparams['Overlap'])
+    Dataset_Train = AudioDataset(netparams['Train_paths'], netparams['WindSize'], netparams['Overlap'])
+    Dataset_Test = AudioDataset(netparams['Test_paths'], netparams['WindSize'], netparams['Overlap'])
     num_workers = multiprocessing.cpu_count()//2
     DataLoader_Train = DataLoader(Dataset_Train, batch_size=netparams['BatchSize'], shuffle=True, drop_last=False, num_workers=num_workers, pin_memory=True)
     DataLoader_Test = DataLoader(Dataset_Test, batch_size=netparams['BatchSize'], shuffle=True, drop_last=True, num_workers=num_workers, pin_memory=True)
 
-    optimizer = torch.optim.Adam(precnet.parameters(), lr = netparams['lr'])
+    optimizer = torch.optim.Adam(precnet.parameters(), lr=netparams['lr'])
 
     ########## Use Apex float16 support for larger batchsize ##########
     # if args.Apex:
     #     precnet, optimizer = amp.initialize(precnet, optimizer, opt_level='O2')
 
     ########## Set up learning rate schedule ##########
-    lr_maker  = lr_scheduler.StepLR(optimizer = optimizer, step_size = 500, gamma = .5)  #.5  decay the lr every step_size epochs by a factor of gamma
+    lr_maker = lr_scheduler.StepLR(optimizer=optimizer, step_size=500, gamma=0.5)  #0.5  decay the lr every step_size epochs by a factor of gamma
 
     ########## Initialize Logger and Tensorboard Writer ##########
-    logf = log(os.path.join(netparams['save_path'],netparams['filename']+'_log.csv'),name=['Epoch','Train_Loss', 'Test_Loss'])
-    logGrad = log(os.path.join(netparams['save_path'],netparams['filename']+'_log_Gradient.csv'),name=['_'.join(name.split('.')) for name, p in precnet.named_parameters()])
+    logf = log(os.path.join(netparams['save_path'], netparams['filename']+'_log.csv'), name=['Epoch', 'Train_Loss', 'Test_Loss'])
+    logGrad = log(os.path.join(netparams['save_path'], netparams['filename']+'_log_Gradient.csv'), name=['_'.join(name.split('.')) for name, p in precnet.named_parameters()])
     netparams['LogDir'] = check_path(netparams['save_path'],'Logs/Trial_{:02d}'.format(Trial))
     writer = SummaryWriter(netparams['LogDir'])
 
@@ -675,17 +682,17 @@ def main(args):
 
             # Weighting Loss for each time step of RNN
             num_timeSteps = netparams['TimeSize']
-            time_loss_weight  = (1. / (num_timeSteps - 1))
-            time_loss_weight  = Variable(torch.from_numpy(np.array([time_loss_weight])).float().to(device))
+            time_loss_weight = (1. / (num_timeSteps - 1))
+            time_loss_weight = Variable(torch.from_numpy(np.array([time_loss_weight])).float().to(device))
             time_loss_weights = [time_loss_weight for _ in range(num_timeSteps - 1)]
             time_loss_weights.insert(0, Variable(torch.from_numpy(np.array([0.])).float().to(device)))
 
             # Compute Batch Loss
             error_list = [batch_x_numLayer__error * layer_weights for batch_x_numLayer__error in output] # Layer weights
             error_list = [error_at_t.sum() for error_at_t in error_list] # Sum across layer
-            total_error = error_list[0] * time_loss_weights[0] # Time Weights
+            total_error = error_list[0] * time_loss_weights[0]  # Time Weights
             for err, time_weight in zip(error_list[1:], time_loss_weights[1:]):
-                total_error = torch.cat((total_error, err * time_weight),axis=0)
+                total_error = torch.cat((total_error, err * time_weight), axis=0)
 
             loss = total_error.mean()
             optimizer.zero_grad()
@@ -727,10 +734,10 @@ def main(args):
                 output, states, _ = precnet(mini_batch, states)
 
                 error_list = [batch_x_numLayer__error * layer_weights for batch_x_numLayer__error in output] # Layer weights
-                error_list = [error_at_t.sum() for error_at_t in error_list] # Sum across layer
-                total_error = error_list[0] * time_loss_weights[0] # Time Weights
+                error_list = [error_at_t.sum() for error_at_t in error_list]  # Sum across layer
+                total_error = error_list[0] * time_loss_weights[0]  # Time Weights
                 for err, time_weight in zip(error_list[1:], time_loss_weights[1:]):
-                    total_error = torch.cat((total_error, err * time_weight),axis=0)
+                    total_error = torch.cat((total_error, err * time_weight), axis=0)
 
                 Test_loss = total_error.mean()
                 sum_testLoss_in_epoch += Test_loss.item()
@@ -745,7 +752,7 @@ def main(args):
         print('Epoch: {:04d} Epoch_Time: {:.3f} Train_Epoch_Loss: {:.5f}  Test_Epoch_Loss: {:.5f}'.format(Epoch, EpochTime, Train_Epoch_Loss, Test_Epoch_Loss))
 
         ########## log data ##########
-        logf.log([Epoch, Train_Epoch_Loss, Test_Epoch_Loss],PRINT=False)
+        logf.log([Epoch, Train_Epoch_Loss, Test_Epoch_Loss], PRINT=False)
         writer.add_scalar('Loss/Train_Epoch_Loss', Train_Epoch_Loss, Epoch)
         writer.add_scalar('Loss/Test_Epoch_Loss', Test_Epoch_Loss, Epoch)
 
