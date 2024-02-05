@@ -5,6 +5,7 @@ import glob
 import os
 import numpy as np
 import numpy.random as npr
+import scipy.stats as stats
 import matplotlib.pyplot as plt
 import multiprocessing
 import json
@@ -56,6 +57,18 @@ mpl.rcParams.update({'font.size':         24,
 
 ########## Checks if path exists, if not then creates directory ##########
 def check_path(basepath, path):
+    """
+    Checks if a given path exists within a basepath. Creates the path if it does not exist.
+
+    Args:
+        basepath (str): The base path to check against.
+        path (str): The path to check.
+
+    Returns:
+        str: The joined basepath and path if the path exists in the basepath. Otherwise, creates the path,
+        prints a message indicating that the directory has been added, and returns the joined basepath and path.
+
+    """
     if path in basepath:
         return basepath
     elif not os.path.exists(os.path.join(basepath, path)):
@@ -160,6 +173,9 @@ actual_stacks = np.empty((total_batches, 132, 8))
 previous_stacks = np.empty((total_batches, 132, 8))
 GT_Label = np.empty(total_batches)
 
+MSE_past = np.empty(total_batches)
+MSE_truth = np.empty(total_batches)
+
 for n in range(total_batches):
     # n = 63  # Item to grab for ground truth and prediction
     plt.rcParams['figure.facecolor'] = 'white'
@@ -180,12 +196,14 @@ for n in range(total_batches):
     actual_stacks[n] = current_truth.numpy()
     predicted_stacks[n] = current_prediction.numpy()
 
-    # MSE_Past = ((past_truth - current_prediction)**2)/1
-    # MSE_Current = ((current_truth - current_prediction)**2)/1
+    MSE_Past = ((past_truth - current_prediction)**2)/1
+    MSE_Current = ((current_truth - current_prediction)**2)/1
 
+    MSE_past[n] = MSE_Past.mean()
+    MSE_truth[n] = MSE_Current.mean()
     # Print truth vs prediction
     # Each chunk is a time step (hence 7 chunks)
-    #
+
     # fig1, axs = plt.subplots(2, 1, figsize=(20, 10))
     # axs[0].imshow(GT_Grid[0, :, 1:21], aspect='auto',  origin='lower') #cmap='gray'
     # axs[0].axis('off')
@@ -195,7 +213,7 @@ for n in range(total_batches):
     # axs[1].set_title('Prediction')
     # plt.tight_layout()
     # plt.show()
-    #
+
     # fig2, axs = plt.subplots(2, 1, figsize=(20, 10))
     # axs[0].imshow(MSE_Past, aspect='auto',  origin='lower') #cmap='gray'
     # axs[0].axis('off')
@@ -206,34 +224,66 @@ for n in range(total_batches):
     # plt.tight_layout()
     # plt.show()
 
-pred_data_frame = pd.DataFrame({
-    "number": GT_Label,
-    "past_truth": previous_stacks.tolist(),
-    "current_truth": actual_stacks.tolist(),
-    "current_prediction": predicted_stacks.tolist(),
-}, dtype="object")
 
-nums = pred_data_frame.number.unique()
+# Begin calculations for MSE of test data
+MSE_data = np.stack((MSE_truth, MSE_past)).T
 
-for num in nums:
-    filtered_frame = pred_data_frame[pred_data_frame["number"] == num]
+t_stat, p_val = stats.ttest_rel(MSE_data[0, :], MSE_data[1, :])
 
-    frame_size = filtered_frame.shape[0]
+print(f"t-statistic: {t_stat}, p-value: {p_val}")
 
-    prev_stack = np.concatenate(filtered_frame["past_truth"].tolist()).reshape((frame_size, 132, 8))
-    curr_stack = np.concatenate(filtered_frame["current_truth"].tolist()).reshape((frame_size, 132, 8))
-    pred_stack = np.concatenate(filtered_frame["current_prediction"].tolist()).reshape((frame_size, 132, 8))
+plt.figure(figsize=(9, 5))
+#bp = plt.boxplot(MSE_data)
+plt.violinplot(MSE_data, showmedians=True)
 
-    MSE_Past = ((prev_stack - pred_stack)**2)/frame_size
-    MSE_Present = ((curr_stack - pred_stack)**2)/frame_size
+# Add data points on top of the boxplot
+for i in range(len(MSE_data)):
+    y = MSE_data[i]  # Grabs a touple of matching points
+    x = np.random.normal([1, 2], 0.01, size=len(y))  # add jitter to the data points
+    plt.plot(x, y, 'r.', alpha=0.5)
 
-    fig2, axs = plt.subplots(2, 1, figsize=(20, 10))
-    axs[0].imshow(MSE_Past.mean(axis=0), aspect='auto',  origin='lower') #cmap='gray'
-    axs[0].axis('off')
-    axs[0].set_title(f"MSE Past, Digit: {num}, MSE: {MSE_Past.mean():.4f}")
-    axs[1].imshow(MSE_Present.mean(axis=0),  aspect='auto',  origin='lower') #cmap='gray'
-    axs[1].axis('off')
-    axs[1].set_title(f"MSE Truth, Digit: {num}, MSE: {MSE_Present.mean():.4f}")
-    plt.tight_layout()
-    plt.show()
+# Draw lines between corresponding data points in each column
+for i in range(MSE_data.shape[0]):
+    plt.plot([1, 2], [MSE_data[i, 0], MSE_data[i, 1]], color='gray', alpha=0.5)
+
+
+
+plt.title(f"MSE plot, t-stat = {t_stat:0.4}, p-val = {p_val:0.4}, n = {MSE_data.shape[0]}",
+          fontsize=18)
+plt.xticks([1, 2], [r'$L_1$', r'$L_2$'])  # LaTeX syntax for subscript
+plt.ylabel('MSE')
+
+plt.show()
+
+# pred_data_frame = pd.DataFrame({
+#     "number": GT_Label,
+#     "past_truth": previous_stacks.tolist(),
+#     "current_truth": actual_stacks.tolist(),
+#     "current_prediction": predicted_stacks.tolist(),
+# }, dtype="object")
+
+# nums = pred_data_frame.number.unique(`)
+
+# Code for calculating MSEs grouped by number/label
+# for num in nums:
+#     filtered_frame = pred_data_frame[pred_data_frame["number"] == num]
+#
+#     frame_size = filtered_frame.shape[0]
+#
+#     prev_stack = np.concatenate(filtered_frame["past_truth"].tolist()).reshape((frame_size, 132, 8))
+#     curr_stack = np.concatenate(filtered_frame["current_truth"].tolist()).reshape((frame_size, 132, 8))
+#     pred_stack = np.concatenate(filtered_frame["current_prediction"].tolist()).reshape((frame_size, 132, 8))
+#
+#     MSE_Past = ((prev_stack - pred_stack)**2)/frame_size
+#     MSE_Present = ((curr_stack - pred_stack)**2)/frame_size
+#
+#     fig2, axs = plt.subplots(2, 1, figsize=(20, 10))
+#     axs[0].imshow(MSE_Past.mean(axis=0), aspect='auto',  origin='lower') #cmap='gray'
+#     axs[0].axis('off')
+#     axs[0].set_title(f"MSE Past, Digit: {num}, MSE: {MSE_Past.mean():.4f}")
+#     axs[1].imshow(MSE_Present.mean(axis=0),  aspect='auto',  origin='lower') #cmap='gray'
+#     axs[1].axis('off')
+#     axs[1].set_title(f"MSE Truth, Digit: {num}, MSE: {MSE_Present.mean():.4f}")
+#     plt.tight_layout()
+#     plt.show()
 
