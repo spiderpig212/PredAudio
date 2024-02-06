@@ -24,6 +24,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 # Custom imports
 from datasets import AudioDataset
+import SETTINGS
 
 # TODO: Refactor out variable names that are single letters
 # Define a function to parse command line arguments
@@ -36,7 +37,7 @@ def arg_parser():
     parser.add_argument('--BatchSize', type=int, default=32)
     parser.add_argument('--Comp', type=int, default=0)
     parser.add_argument('--source_path', type=str,
-                        default='~/Research/PredAudio/',
+                        default=SETTINGS.DATA_PATH,
                         help='Path to load files from')
     parser.add_argument('--outputmode', type=str, default='prediction',
                         help='Chose a loss function: error, prediction')
@@ -44,21 +45,21 @@ def arg_parser():
                         help='Tau is how many frames in the future to predict')
     parser.add_argument('--UseMotor', type=int, default=0,
                         help='Integrate motor commands in network')
-    parser.add_argument('--Nepochs', type=int, default=200,
-                        help='Number of epochs (pass through dataset)')
+    parser.add_argument('--Nepochs', type=int,default=200,
+                       help='Number of epochs (pass through dataset)')
     parser.add_argument('--Trial', type=int, default=99,
                         help='Trial Number')
     parser.add_argument('--RNG', type=int, default=1132,
                         help='Random Seed')
     parser.add_argument('--MotorLayer', type=int, default=0,
-                        help='Motor Layer Input')
-    parser.add_argument('--ArrayID', type=int, default=0)
-    parser.add_argument('--TotTrials', type=int, default=4)
-    parser.add_argument('--TotMotorLayer', type=int, default=4)
-    parser.add_argument('--Talapas', type=int, default=0)
-    parser.add_argument('--Stateful', type=int, default=0)
-    parser.add_argument('--Save_Grad', type=int, default=1)
-    parser.add_argument('--Apex', type=int, default=1)
+                    help='Motor Layer Input')
+    parser.add_argument('--ArrayID',type=int,default=0)
+    parser.add_argument('--TotTrials',type=int,default=4)
+    parser.add_argument('--TotMotorLayer',type=int,default=4)
+    parser.add_argument('--Talapas',type=int,default=0)
+    parser.add_argument('--Stateful',type=int,default=0)
+    parser.add_argument('--Save_Grad',type=int,default=1)
+    parser.add_argument('--Apex',type=int,default=1)
 
     args = parser.parse_args()
     return args
@@ -828,8 +829,8 @@ def main(args):
                  # 'source_path': source_path,
                  'save_path': save_path,
                  'input_shape': (BatchSize, TimeSize, img_height, img_width, 1),
-                 'Train_paths': os.path.join(rootdir, 'Specs_train.npy'),
-                 'Test_paths': os.path.join(rootdir, 'Specs_test.npy'),
+                 'Train_paths': os.path.join(rootdir, 'soundFiles/Specs_train.npy'),
+                 'Test_paths': os.path.join(rootdir, 'soundFiles/Specs_test.npy'),
                  'Trial': int(Trial),
                  'use_motor': 0,
                  'Stateful': int(Stateful),

@@ -128,3 +128,4 @@ dmypy.json
 # Pyre type checker
 .pyre/
 /SETTINGS.py
+/PreCNetGRU_T007_N07_E1500_Tau01_Visual_Netparams.json
