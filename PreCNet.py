@@ -212,6 +212,42 @@ def plot_imshow(batch, frame_pred, netparams):
     return fig1, fig2
 
 
+def MSE_calculation(batch, frame_pred, netparams):
+    FM_Pred = np.stack(frame_pred).transpose(1, 0, 2).reshape(netparams['BatchSize'], netparams['TimeSize'],
+                                                              netparams['height'], netparams['width'])
+    GT = np.squeeze(batch.detach().numpy())
+
+    # Grab data to visualize
+    total_sounds = GT.shape[0]
+    MSE_past = np.empty(total_sounds)
+    MSE_truth = np.empty(total_sounds)
+
+    for n in range(total_sounds):
+        plt.rcParams['figure.facecolor'] = 'white'
+
+        # (64 channels, 7 time steps, 128 freqs, 16 segments in the time step [fed previous 16 segements,
+        # predicts next 16 segments, though first 8 are known from overlap])
+        fmGT = torch.FloatTensor(GT[n]).unsqueeze(
+            1)  # The make_grid requires a 4D-tensor, so we unsqueeze to have the grayscale channel back
+        fmP = torch.FloatTensor(FM_Pred[n]).unsqueeze(1)  # Should be (batch, color_channels, height, width)
+
+        GT_Grid = torchvision.utils.make_grid(fmGT[:, :, :, 8:], nrow=netparams[
+            'TimeSize'])  # Plot from 8 on to avoid plotting overlap in the images
+        P_Grid = torchvision.utils.make_grid(fmP[:, :, :, 8:], nrow=netparams['TimeSize'])
+
+        past_truth = GT_Grid[0, :, 2:10]
+        current_truth = GT_Grid[0, :, 12:20]
+        current_prediction = P_Grid[0, :, 12:20]
+
+        MSE_Past = ((past_truth - current_prediction) ** 2) / 1
+        MSE_Current = ((current_truth - current_prediction) ** 2) / 1
+
+        MSE_past[n] = MSE_Past.mean()
+        MSE_truth[n] = MSE_Current.mean()
+
+    return MSE_past, MSE_truth
+
+
 @njit(parallel=True)
 def parallel_diff(FM_Pred, FM_Actual, diffrange=10):
     """
@@ -307,7 +343,7 @@ class PreCNet(nn.Module):
                  pixel_max=1., error_activation='relu', stateful=True,
                  GRU_activation='tanh', GRU_inner_activation='hard_sigmoid',
                  output_mode='error', extrap_start_time=None, data_format='channels_first',
-                 device='cuda',
+                 device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
                  lr=.003, optimizer='Adam', **kwargs):
         super(PreCNet, self).__init__()
         self.stack_sizes = stack_sizes  # Sizes of each layer's stack in the network
@@ -410,7 +446,7 @@ class PreCNet(nn.Module):
         """
         Constructs the network layers and sets up the architecture.
         """
-        self.conv_layers = {c: [] for c in ['hd', 'zd', 'od', 'hu', 'zu', 'ou', 'ahat']}  # h = i (input), z = f (forget), o = o (output)
+        self.conv_layers = {c: [] for c in ['hd', 'zd', 'od', 'hu', 'zu', 'ou', 'ahat']}  # h = i (input), z = f (forget), o = o (output), ahat = r or ahat, which is activity
         self.parms = []
         for c in sorted(self.conv_layers.keys()):
             for l in range(self.nb_layers):
@@ -764,7 +800,7 @@ def main(args):
     # Use GPU if available, otherwise CPU
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    Trial      = 13    # Trial number
+    Trial      = 14    # Trial number
     n_channels = 1
     img_height = 128
     img_width  = 16
@@ -883,6 +919,11 @@ def main(args):
     ##### Epoch Training Loop #####
     totsteps = 0
     min_trainLoss_in_epoch = float('inf')
+    mse_train_mean_epoch_truth = np.empty(netparams['Nepochs'] + 1)
+    mse_test_mean_epoch_truth = np.empty(netparams['Nepochs'] + 1)
+    mse_train_mean_epoch_past = np.empty(netparams['Nepochs'] + 1)
+    mse_test_mean_epoch_past = np.empty(netparams['Nepochs'] + 1)
+
     for Epoch in range(netparams['Nepochs']+1):
         tr_loss = 0.0
         sum_trainLoss_in_epoch = 0.0
@@ -891,6 +932,12 @@ def main(args):
 
         initial_states = precnet.get_initial_states(input_shape)
         states = initial_states
+        # Initialize arrays to store MSEs.
+        mse_train_mean_batch_past = np.empty(len(DataLoader_Train))
+        mse_test_mean_batch_past = np.empty(len(DataLoader_Test))
+        mse_train_mean_batch_truth = np.empty(len(DataLoader_Train))
+        mse_test_mean_batch_truth = np.empty(len(DataLoader_Test))
+
         ##### Gradient Step Loop #####
         for step, batch in enumerate(DataLoader_Train):
             mini_batch = batch.to(device)
@@ -902,7 +949,14 @@ def main(args):
                 plt.close(GTVPred)
                 plt.close(DiffPlot)
             else:
-                output, states, _ = precnet(mini_batch, states)
+                output, states, frame_pred = precnet(mini_batch, states, grab_frame=True)
+
+            # Store MSE for train batches
+            MSE_Past, MSE_Truth = MSE_calculation(batch, frame_pred, netparams)
+
+            # Average the MSEs for each batch and store to distill for each epoch later
+            mse_train_mean_batch_past[step] = MSE_Past.mean()
+            mse_train_mean_batch_truth[step] = MSE_Truth.mean()
 
             num_layer = len(netparams['stack_sizes'])
             # weighting for each layer in final loss
@@ -969,7 +1023,7 @@ def main(args):
             states = initial_states
             for step, batch in enumerate(DataLoader_Test):
                 mini_batch = batch.to(device)
-                output, states, _ = precnet(mini_batch, states)
+                output, states, _ = precnet(mini_batch, states, grab_frame=True)
 
                 error_list = [batch_x_numLayer__error * layer_weights for batch_x_numLayer__error in output] # Layer weights
                 error_list = [error_at_t.sum() for error_at_t in error_list]  # Sum across layer
@@ -981,6 +1035,19 @@ def main(args):
                 sum_testLoss_in_epoch += Test_loss.item()
                 # if (netparams['Stateful'] == 1)  & ((step % (netparams['VidLength'] // netparams['TimeSize']))==0)  & (step>0): #
                 states = precnet.get_initial_states(input_shape)
+
+                MSE_Past, MSE_Truth = MSE_calculation(batch, frame_pred, netparams)
+
+                # Average and store batch MSEs for test data
+                mse_test_mean_batch_past[step] = MSE_Past.mean()
+                mse_test_mean_batch_truth[step] = MSE_Truth.mean()
+
+        # Average MSE for train and test batches and store them to see how train and test change each epoch
+        mse_train_mean_epoch_past[Epoch] = mse_train_mean_batch_past.mean()
+        mse_test_mean_epoch_past[Epoch] = mse_test_mean_batch_past.mean()
+        mse_train_mean_epoch_truth[Epoch] = mse_train_mean_batch_truth.mean()
+        mse_test_mean_epoch_truth[Epoch] = mse_test_mean_batch_truth.mean()
+
 
         lr_maker.step() # Iterate Learning Rate Scheduler
         endTime_epoch    = time.time()
@@ -1003,6 +1070,18 @@ def main(args):
                         'Loss': loss},
                         os.path.join(netparams['save_path'], netparams['filename']+'.pt'))
             print(f"Saved New Model to {netparams['save_path'], netparams['filename']+'.pt'}")
+
+    # Plot the MSEs over time. May want to change this to a whole "if plot" type thing
+    x_epochs = np.arange(netparams['Nepochs']+1)
+    plt.plot(x_epochs, mse_train_mean_epoch_truth, label="GT train")
+    plt.plot(x_epochs, mse_test_mean_epoch_truth, label="GT test")
+    plt.plot(x_epochs, mse_train_mean_epoch_past, label="Past train")
+    plt.plot(x_epochs, mse_test_mean_epoch_past, label="Past test")
+    plt.legend()
+    plt.xlabel("Epoch")
+    plt.ylabel(r"MSE value")
+    plt.savefig(os.path.join(SETTINGS.DATA_PATH + "Figures/MSE_plot.png"))
+    plt.show()
 
     ##### Close Tensorboard #####
     writer.flush()
