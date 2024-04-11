@@ -93,7 +93,7 @@ savefigs = False
 # if gpu is to be used
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-Trial    = 8
+Trial    = 16
 TimeSize = 7
 
 output_mode = 'error'
@@ -287,3 +287,62 @@ plt.show()
 #     plt.tight_layout()
 #     plt.show()
 
+#%% Individual spectrogram generation
+total_batches = GT.shape[0]
+predicted_stacks = np.empty((total_batches, 132, 8))
+actual_stacks = np.empty((total_batches, 132, 8))
+previous_stacks = np.empty((total_batches, 132, 8))
+GT_Label = np.empty(total_batches)
+
+MSE_past = np.empty(total_batches)
+MSE_truth = np.empty(total_batches)
+
+n = 22
+# Item to grab for ground truth and prediction
+plt.rcParams['figure.facecolor'] = 'white'
+# (64 channels, 7 time steps, 128 freqs, 16 segments in the time step [fed first 8 segements, predicts next 8 segments])
+fmGT = torch.FloatTensor(GT[n]).unsqueeze(1)  # The make_grid requires a 4D-tensor, so we unsqueeze to have the grayscale channel back
+fmP = torch.FloatTensor(FM_Pred[n]).unsqueeze(1)  # Should be (batch, color_channels, height, width)
+GT_Grid = torchvision.utils.make_grid(fmGT[:4, :, :, 8:], nrow=netparams['TimeSize'])  # Plot from 8 on to avoid plotting overlap in the images
+P_Grid = torchvision.utils.make_grid(fmP[:4, :, :, 8:], nrow=netparams['TimeSize'])  #
+# GT_Grid = torchvision.utils.make_grid(fmGT[:, :, :, :], nrow=netparams['TimeSize'])
+# P_Grid = torchvision.utils.make_grid(fmP[:, :, :, :], nrow=netparams['TimeSize'])
+past_truth = GT_Grid[0, :, 2:10]
+current_truth = GT_Grid[0, :, 12:20]
+current_prediction = P_Grid[0, :, 12:20]
+
+GT_Label[n] = labels_train['digits'][n]
+
+previous_stacks[n] = past_truth.numpy()
+actual_stacks[n] = current_truth.numpy()
+predicted_stacks[n] = current_prediction.numpy()
+
+MSE_Past = ((past_truth - current_prediction)**2)/1
+MSE_Current = ((current_truth - current_prediction)**2)/1
+
+MSE_past[n] = MSE_Past.mean()
+MSE_truth[n] = MSE_Current.mean()
+# Print truth vs prediction
+# Each chunk is a time step (hence 7 chunks)
+
+fig1, axs = plt.subplots(2, 1, figsize=(20, 10))
+# axs[0].imshow(GT_Grid[0, :, 1:21], aspect='auto',  origin='lower') #cmap='gray'
+axs[0].imshow(GT_Grid[0, :, :], aspect='auto',  origin='lower') #cmap='gray'
+axs[0].axis('off')
+axs[0].set_title('Ground Truth, Digit: {:d}'.format(labels_train['digits'][n]))
+#axs[1].imshow(P_Grid[0, :, 1:21],  aspect='auto',  origin='lower') #cmap='gray'
+axs[1].imshow(P_Grid[0, :, :],  aspect='auto',  origin='lower') #cmap='gray'
+axs[1].axis('off')
+axs[1].set_title('Prediction')
+plt.tight_layout()
+plt.show()
+
+# fig2, axs = plt.subplots(2, 1, figsize=(20, 10))
+# axs[0].imshow(MSE_Past, aspect='auto',  origin='lower') #cmap='gray'
+# axs[0].axis('off')
+# axs[0].set_title(f"MSE Past , Digit: {labels_train['digits'][n]}, MSE: {MSE_Past.mean():.4f}")
+# axs[1].imshow(MSE_Current,  aspect='auto',  origin='lower') #cmap='gray'
+# axs[1].axis('off')
+# axs[1].set_title(f"MSE Truth , Digit: {labels_train['digits'][n]:}, MSE: {MSE_Current.mean():.4f}")
+# plt.tight_layout()
+# plt.show()
